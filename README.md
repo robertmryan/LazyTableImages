@@ -7,3 +7,5 @@ This is an edit of Apple's [LazyTableImages](http://developer.apple.com/library/
 3. Once it starts to download the image, it won't cancel it even if the cell subsequently scrolls off of the screen.
 
 The initial commit of this project is Apple's original project, so if you look at the change history, my edits should be apparent. The net effect is that it simplifies the implementation and employs `NSOperationQueue` to constrain the number of concurrent requests.
+
+There are `UIImageView` categories (such as included in [`SDWebImage`](https://github.com/rs/SDWebImage) or [`AFNetworking`](https://github.com/AFNetworking/AFNetworking)) that are superior solutions (lazy image loading functionality that completely extricates from your app the complexity of background image requests, caching, cancelling previous requests). But for those who are hesitant to use these excellent libraries, this project illustrates one possible way to do lazy image loading, while not suffering from the limitations/problems in Apple's old sample project.
