@@ -233,6 +233,17 @@
     }
 }
 
+#pragma mark - UITableViewDelegate
+
+- (void)tableView:(UITableView *)tableView didEndDisplayingCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    IconDownloader *iconDownloader = [self.imageDownloadsInProgress objectForKey:indexPath];
+    if (iconDownloader)
+    {
+        [iconDownloader cancelDownload];
+    }
+}
+
 #pragma mark - UIScrollViewDelegate
 
 // -------------------------------------------------------------------------------
