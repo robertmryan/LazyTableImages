@@ -55,34 +55,87 @@
 
 @interface IconDownloader ()
 @property (nonatomic, strong) NSMutableData *activeDownload;
-@property (nonatomic, strong) NSURLConnection *imageConnection;
+@property (nonatomic, weak)   NSURLConnection *imageConnection;
+
+@property (nonatomic, getter = isExecuting) BOOL executing;
+@property (nonatomic, getter = isFinished)  BOOL finished;
+
 @end
 
 
 @implementation IconDownloader
 
-#pragma mark
-
-- (void)startDownload
+- (void)start
 {
-    self.activeDownload = [NSMutableData data];
+    if (self.isCancelled)
+    {
+        self.executing = NO;
+        self.finished = YES;
+        return;
+    };
+
+    self.executing = YES;
+    self.finished = NO;
     
     NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:self.appRecord.imageURLString]];
+
+    // create connection (but don't start yet)
+
+    NSURLConnection *connection = [[NSURLConnection alloc] initWithRequest:request delegate:self startImmediately:NO];
+
+    // generally I'd schedule this in a dedicated thread with its own run loop, but I'm trying to keep this simple
+
+    [connection scheduleInRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
+
+    // start the connection
     
-    // alloc+init and start an NSURLConnection; release on completion/failure
-    NSURLConnection *conn = [[NSURLConnection alloc] initWithRequest:request delegate:self];
+    [connection start];
+
+    // save the connection for future reference (e.g. someone decides to cancel an operation)
     
-    self.imageConnection = conn;
+    self.imageConnection = connection;
 }
 
-- (void)cancelDownload
+- (void)cancel
 {
     [self.imageConnection cancel];
     self.imageConnection = nil;
     self.activeDownload = nil;
+
+    if (self.isExecuting)
+    {
+        self.executing = NO;
+        self.finished = YES;
+    }
+}
+
+#pragma mark NSOperation Specific Methods
+
+- (BOOL)isConcurrent
+{
+    return YES;
+}
+
+- (void)setExecuting:(BOOL)isExecuting
+{
+    [self willChangeValueForKey:@"isExecuting"];
+    _executing = isExecuting;
+    [self didChangeValueForKey:@"isExecuting"];
+}
+
+- (void)setFinished:(BOOL)isFinished
+{
+    [self willChangeValueForKey:@"isFinished"];
+    _finished = isFinished;
+    [self didChangeValueForKey:@"isFinished"];
 }
 
 #pragma mark - NSURLConnectionDelegate
+
+- (void)connection:(NSURLConnection *)connection didReceiveResponse:(NSURLResponse *)response
+{
+    self.activeDownload = [NSMutableData data];
+}
 
 - (void)connection:(NSURLConnection *)connection didReceiveData:(NSData *)data
 {
@@ -91,11 +144,8 @@
 
 - (void)connection:(NSURLConnection *)connection didFailWithError:(NSError *)error
 {
-	// Clear the activeDownload property to allow later attempts
-    self.activeDownload = nil;
-    
-    // Release the connection now that it's finished
-    self.imageConnection = nil;
+    self.executing = NO;
+    self.finished = YES;
 }
 
 - (void)connectionDidFinishLoading:(NSURLConnection *)connection
@@ -117,14 +167,8 @@
         self.appRecord.appIcon = image;
     }
     
-    self.activeDownload = nil;
-    
-    // Release the connection now that it's finished
-    self.imageConnection = nil;
-        
-    // call our delegate and tell it that our icon is ready for display
-    if (self.completionHandler)
-        self.completionHandler();
+    self.executing = NO;
+    self.finished = YES;
 }
 
 @end
