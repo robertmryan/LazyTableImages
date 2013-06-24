@@ -64,9 +64,8 @@
 #define kCustomRowCount     7
 
 
-@interface RootViewController () <UIScrollViewDelegate>
-// the set of IconDownloader objects for each app
-@property (nonatomic, strong) NSMutableDictionary *imageDownloadsInProgress;
+@interface RootViewController () <UITableViewDelegate, UIScrollViewDelegate>
+@property (nonatomic, strong) NSOperationQueue *downloadQueue;
 @end
 
 
@@ -80,8 +79,10 @@
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    
-    self.imageDownloadsInProgress = [NSMutableDictionary dictionary];
+
+    self.downloadQueue = [[NSOperationQueue alloc] init];
+    self.downloadQueue.maxConcurrentOperationCount = 5;
+    self.downloadQueue.name = @"Icon Download Queue";
 }
 
 // -------------------------------------------------------------------------------
@@ -90,12 +91,11 @@
 - (void)didReceiveMemoryWarning
 {
     [super didReceiveMemoryWarning];
-    
-    // terminate all pending download connections
-    NSArray *allDownloads = [self.imageDownloadsInProgress allValues];
-    [allDownloads makeObjectsPerformSelector:@selector(cancelDownload)];
-    
-    [self.imageDownloadsInProgress removeAllObjects];
+
+    for (AppRecord *appRecord in self.entries)
+    {
+        appRecord.appIcon = nil;
+    }
 }
 
 #if __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_6_0
@@ -120,11 +120,6 @@
 {
 	NSUInteger count = [self.entries count];
 	
-	// if there's no data yet, return enough rows to fill the screen
-    if (count == 0)
-	{
-        return kCustomRowCount;
-    }
     return count;
 }
 
@@ -136,48 +131,29 @@
 	// customize the appearance of table view cells
 	//
 	static NSString *CellIdentifier = @"LazyTableCell";
-    static NSString *PlaceholderCellIdentifier = @"PlaceholderCell";
-    
-    // add a placeholder cell while waiting on table data
-    NSUInteger nodeCount = [self.entries count];
-	
-	if (nodeCount == 0 && indexPath.row == 0)
-	{
-        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:PlaceholderCellIdentifier];
 
-		cell.detailTextLabel.text = @"Loading…";
-		
-		return cell;
-    }
-	
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:CellIdentifier];
 
-    // Leave cells empty if there's no data yet
-    if (nodeCount > 0)
-	{
-        // Set up the cell...
-        AppRecord *appRecord = [self.entries objectAtIndex:indexPath.row];
-        
-		cell.textLabel.text = appRecord.appName;
-        cell.detailTextLabel.text = appRecord.artist;
-		
-        // Only load cached images; defer new downloads until scrolling ends
-        if (!appRecord.appIcon)
-        {
-            if (self.tableView.dragging == NO && self.tableView.decelerating == NO)
-            {
-                [self startIconDownload:appRecord forIndexPath:indexPath];
-            }
-            // if a download is deferred or in progress, return a placeholder image
-            cell.imageView.image = [UIImage imageNamed:@"Placeholder.png"];                
-        }
-        else
-        {
-           cell.imageView.image = appRecord.appIcon;
-        }
+    // Set up the cell...
+    AppRecord *appRecord = [self.entries objectAtIndex:indexPath.row];
 
+    cell.textLabel.text = appRecord.appName;
+    cell.detailTextLabel.text = appRecord.artist;
+
+    // Only load cached images; defer new downloads until scrolling ends
+    if (appRecord.appIcon)
+    {
+        cell.imageView.image = appRecord.appIcon;
     }
-    
+    else
+    {
+        // if a download is deferred or in progress, return a placeholder image
+        cell.imageView.image = [UIImage imageNamed:@"Placeholder.png"];
+
+        // now start download
+        [self startIconDownload:appRecord forIndexPath:indexPath];
+    }
+
     return cell;
 }
 
@@ -188,82 +164,66 @@
 // -------------------------------------------------------------------------------
 - (void)startIconDownload:(AppRecord *)appRecord forIndexPath:(NSIndexPath *)indexPath
 {
-    IconDownloader *iconDownloader = [self.imageDownloadsInProgress objectForKey:indexPath];
-    if (iconDownloader == nil) 
-    {
-        iconDownloader = [[IconDownloader alloc] init];
-        iconDownloader.appRecord = appRecord;
-        [iconDownloader setCompletionHandler:^{
-            
+    if (appRecord.downloadOperation) return;
+
+    IconDownloader *operation = [[IconDownloader alloc] init];
+    operation.appRecord = appRecord;
+
+    [operation setCompletionBlock:^{
+
+        [[NSOperationQueue mainQueue] addOperationWithBlock:^{
             UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
-            
+
             // Display the newly loaded image
             cell.imageView.image = appRecord.appIcon;
-            
-            // Remove the IconDownloader from the in progress list.
-            // This will result in it being deallocated.
-            [self.imageDownloadsInProgress removeObjectForKey:indexPath];
-            
         }];
-        [self.imageDownloadsInProgress setObject:iconDownloader forKey:indexPath];
-        [iconDownloader startDownload];  
-    }
-}
+    }];
 
-// -------------------------------------------------------------------------------
-//	loadImagesForOnscreenRows
-//  This method is used in case the user scrolled into a set of cells that don't
-//  have their app icons yet.
-// -------------------------------------------------------------------------------
-- (void)loadImagesForOnscreenRows
-{
-    if ([self.entries count] > 0)
-    {
-        NSArray *visiblePaths = [self.tableView indexPathsForVisibleRows];
-        for (NSIndexPath *indexPath in visiblePaths)
-        {
-            AppRecord *appRecord = [self.entries objectAtIndex:indexPath.row];
-            
-            if (!appRecord.appIcon)
-            // Avoid the app icon download if the app already has an icon
-            {
-                [self startIconDownload:appRecord forIndexPath:indexPath];
-            }
-        }
-    }
+    appRecord.downloadOperation = operation;
+    [self.downloadQueue addOperation:operation];
 }
 
 #pragma mark - UITableViewDelegate
 
 - (void)tableView:(UITableView *)tableView didEndDisplayingCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath
 {
-    IconDownloader *iconDownloader = [self.imageDownloadsInProgress objectForKey:indexPath];
-    if (iconDownloader)
-    {
-        [iconDownloader cancelDownload];
-    }
+    AppRecord *appRecord = [self.entries objectAtIndex:indexPath.row];
+    if (appRecord.downloadOperation)
+        [appRecord.downloadOperation cancel];
 }
 
 #pragma mark - UIScrollViewDelegate
 
-// -------------------------------------------------------------------------------
-//	scrollViewDidEndDragging:willDecelerate:
-//  Load images for all onscreen rows when scrolling is finished.
-// -------------------------------------------------------------------------------
-- (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView
 {
-    if (!decelerate)
-	{
-        [self loadImagesForOnscreenRows];
+    // if iOS version less than 6.0, then we don't have `didEndDisplayingCell`, so we have to check if a cell scrolled away in scrollViewDidScroll
+    
+    if ([self iOSVersionMajor] < 6)
+    {
+        [self.entries enumerateObjectsUsingBlock:^(AppRecord *appRecord, NSUInteger idx, BOOL *stop) {
+            UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:idx inSection:0]];
+
+            // if the cell is not visible, but there's a download operation in progress
+
+            if (cell == nil && appRecord.downloadOperation != nil)
+            {
+                // then cancel it
+
+                [appRecord.downloadOperation cancel];
+            }
+        }];
     }
 }
 
-// -------------------------------------------------------------------------------
-//	scrollViewDidEndDecelerating:
-// -------------------------------------------------------------------------------
-- (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView
+- (NSInteger) iOSVersionMajor
 {
-    [self loadImagesForOnscreenRows];
+    static NSInteger iOSVersion = -1;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        iOSVersion = [[[UIDevice currentDevice] systemVersion] integerValue];
+    });
+
+    return iOSVersion;
 }
 
 @end
